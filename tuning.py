@@ -33,32 +33,32 @@ class TunerWrapper():
     def __init__(self, input_shape, num_outputs, *args, **kwargs):
         self.input_shape = input_shape
         self.num_outputs = num_outputs
-        self.max_layers = 5 if not 'max_layers' in kwargs else kwargs['max_layers']
-        self.min_layers = 2 if not 'min_layers' in kwargs else kwargs['min_layers']
         self.activation = 'relu' if not 'activation' in kwargs else kwargs['activation']
+        
+        self.min_layers = 1 if not 'min_layers' in kwargs else kwargs['min_layers']
+        self.max_layers = 3 if not 'max_layers' in kwargs else kwargs['max_layers']
+
+        self.min_units = 8 if not 'min_units' in kwargs else kwargs['min_units']
+        self.max_units = 96 if not 'max_units' in kwargs else kwargs['max_units']
+
+        self.unit_step = 8 if not 'unit_step' in kwargs else kwargs['unit_step']
 
     @tf.function
     def loss_fcn(self, y_t, y_p):
-        """
-            @brief:
-                loss function to penalize overestimates 
-        """
-        
+
         y_pred = tf.convert_to_tensor(y_p)
         y_true = tf.cast(y_t, y_pred.dtype)
-        
+
         diff = y_pred-y_true
-            
-        res = tf.map_fn(fn=lambda x: tf.math.exp(-x/13) if x < 0 else tf.math.exp(x/10), elems=diff)
+
+        res = tf.map_fn(fn=lambda x: tf.math.exp(tf.abs(x)/(10)) - 1 if x < 0 else tf.math.exp(tf.abs(x)/13) - 1, elems=diff)
         s_score = tf.math.reduce_sum(res)
 
         mse = tf.math.reduce_sum(backend.mean(tf.math.squared_difference(y_pred, y_true), axis=-1))
 
-        score = s_score + mse
-    
-        return score / 2.0
+        score = (s_score + mse)  / 2.0
 
-
+        return score
 
     def create_hypermodel(self, hp):
         """
@@ -138,21 +138,21 @@ class TunerWrapper():
 
         # tune the number of units per layer
         units = []
-        for i in range(self.max_layers):
-            units.append(hp.Int(f'units_{i}', min_value=32, max_value=512, step=32))
+        for i in range(layers):
+            units.append(hp.Int(f'units_{i}', min_value=self.min_units, max_value=self.max_units, step=self.unit_step))
 
         # tune the dropout rate
         dropout_rate = hp.Choice('dropout_rate', values=[.2, .25, .4])
 
         # tune regularization rate
-        l1 = hp.Choice('l1', values=[0, .00001, .0005, .0001, .0005])
-        l2 = hp.Choice('l2', values=[0, .00001, .0005, .0001, .0005])
+        l1 = hp.Choice('l1', values=[0.0, .00001, .0005, .0001, .0005])
+        l2 = hp.Choice('l2', values=[0.0, .00001, .0005, .0001, .0005])
 
         # tune the learning rate for the optimizer
         learning_rate = hp.Choice('learning_rate', values=[.0001, .0005, .001, .0025, .005])
 
         # tune the recurrent dropout
-        recurrent_dropout = hp.Choice('recurrent_dropout', values = [0, .1, .25, .4])
+        recurrent_dropout = hp.Choice('recurrent_dropout', values = [0.0, .1, .25, .4])
 
         params = MyParameters(layers=layers, units=units, dropout_rate=dropout_rate, recurrent_dropout=recurrent_dropout, l1=l1, l2=l2, learning_rate=learning_rate)
 
@@ -165,11 +165,13 @@ class TunerWrapper():
         """
             @brief: builds the model with the specified params
         """
+        i = 0
+
         print(params.layers, params.units, params.learning_rate)
         # input layer
         inputs = keras.Input(shape=self.input_shape, name='inp1')
         # first layer
-        x = layers.Bidirectional(layers.LSTM(units=params.units, 
+        x = layers.Bidirectional(layers.LSTM(units=params.units[i], 
                             recurrent_dropout=params.recurrent_dropout,
                             kernel_regularizer=regularizers.l1_l2(l1=params.l1, l2=params.l2),
                             return_sequences=True, 
@@ -180,7 +182,7 @@ class TunerWrapper():
 
         # subsequent layers
         for i in range(1, params.layers-1):
-            x = layers.Bidirectional(layers.LSTM(units=params.units, 
+            x = layers.Bidirectional(layers.LSTM(units=params.units[i], 
                             recurrent_dropout=params.recurrent_dropout,
                             kernel_regularizer=regularizers.l1_l2(l1=params.l1, l2=params.l2),
                             return_sequences=True, 
@@ -190,7 +192,7 @@ class TunerWrapper():
                 x = layers.Dropout(rate=params.dropout_rate)(x)
         
         # last layers
-        x = layers.Bidirectional(layers.LSTM(units=params.units, 
+        x = layers.Bidirectional(layers.LSTM(units=params.units[-1], 
                             recurrent_dropout=params.recurrent_dropout,
                             kernel_regularizer=regularizers.l1_l2(l1=params.l1, l2=params.l2),
                             return_sequences=False, 
@@ -371,7 +373,7 @@ class MyParameters():
         self.metric = "na" if not 'metric' in kwargs else kwargs['metric']
         self.score = -1 if not 'score' in kwargs else kwargs['score']
         self.recurrent_dropout = kwargs['recurrent_dropout']
-        self.activation = kwargs['activation']
+        self.activation = 'relu' if not 'activation' in kwargs else kwargs['activation']
 
     def __str__(self):
         return f"{self.layers}-layers_{self.units}-units_{str(self.learning_rate).split('.')[1]}_learningRate"
